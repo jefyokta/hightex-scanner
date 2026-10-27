@@ -59,6 +59,16 @@ function validateDiagnostics(
       typeof item.message !== "string" ||
       !["warning", "error"].includes(item.severity) ||
       (item.chapterId !== undefined && typeof item.chapterId !== "string") ||
+      (item.nodeId !== undefined &&
+        (typeof item.nodeId !== "string" || !item.nodeId)) ||
+      (item.range !== undefined &&
+        (!item.range ||
+          typeof item.range !== "object" ||
+          Array.isArray(item.range) ||
+          !Number.isInteger(item.range.from) ||
+          !Number.isInteger(item.range.to) ||
+          item.range.from < 0 ||
+          item.range.to < item.range.from)) ||
       (item.paragraph !== undefined &&
         (!Number.isInteger(item.paragraph) || item.paragraph < 1)) ||
       (item.path !== undefined &&

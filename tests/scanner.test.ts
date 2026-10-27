@@ -6,6 +6,7 @@ import {
   runScan,
   scan,
   type DocumentNode,
+  type ScanDiagnostic,
 } from "../src/index.js";
 
 const paragraph = (text: string): DocumentNode => ({
@@ -24,7 +25,7 @@ const context = (content: DocumentNode[] = []) =>
   createScanContext({ chapters: [{ id: "1", content }] });
 
 describe("standalone scanner", () => {
-  test("equation numbering continues across chapters like the desktop document", () => {
+  test("equation numbering continues across chapters like the desktop document", async () => {
     const ctx = createScanContext({
       chapters: [
         { id: "1", content: [{ type: "blockMath", attrs: { id: "eq1" } }] },
@@ -33,6 +34,11 @@ describe("standalone scanner", () => {
     });
     expect(ctx.equations.map((item) => item.numbering)).toEqual(["1", "2"]);
     expect(ctx.equations.map((item) => item.pos)).toEqual([1, 2]);
+    const report = await runScan(ctx);
+    expect(report.diagnostics.map((x) => x.message)).toEqual([
+      "Persamaan 1 belum dirujuk dalam teks",
+      "Persamaan 2 belum dirujuk dalam teks",
+    ]);
   });
   test("extracts graphs from JSON with captions, paths and equation reference semantics", async () => {
     const ctx = context([
@@ -68,6 +74,7 @@ describe("standalone scanner", () => {
     expect(report.diagnostics[0]).toMatchObject({
       code: "unreferenced_figure",
       chapterId: "1",
+      nodeId: "tbl",
       path: [1],
     });
   });
@@ -88,6 +95,220 @@ describe("standalone scanner", () => {
     });
     expect(ctx.images.map((x) => x.numbering)).toEqual(["A.1", "B.2"]);
     expect(ctx.images[1].path).toEqual([3, 0]);
+  });
+
+  test.each([
+    { id: "attachment" },
+    { id: "document.attachment", attachment: true },
+  ])(
+    "excludes attachment figures but reports unreferenced attachment headings: %p",
+    async (chapter) => {
+      const ctx = createScanContext({
+        chapters: [
+          {
+            id: "1",
+            numbering: "2",
+            content: [
+              figure("main-image"),
+              { type: "figureTable", attrs: { id: "main-table" } },
+              { type: "blockMath", attrs: { id: "main-equation" } },
+            ],
+          },
+          {
+            ...chapter,
+            content: [
+              {
+                type: "heading",
+                attrs: { id: "appendix", level: 1 },
+                content: [{ type: "text", text: "Supporting data" }],
+              },
+              {
+                type: "blockquote",
+                content: [
+                  figure(""),
+                  { type: "figureTable" },
+                  { type: "blockMath" },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+      const report = await runScan(ctx);
+      const result = report.results["unreferenced-figures"]!;
+      expect(report.complete).toBe(true);
+      expect(ctx.chapters[1].attachment).toBe(true);
+      expect(result.images.map((x) => x.id)).toEqual(["main-image"]);
+      expect(result.tables.map((x) => x.id)).toEqual(["main-table"]);
+      expect(result.equations.map((x) => x.id)).toEqual(["main-equation"]);
+      expect(result.headings).toEqual([
+        {
+          id: "appendix",
+          chapterId: chapter.id,
+          text: [{ type: "text", text: "Supporting data" }],
+          pos: 1,
+          numbering: "1",
+          path: [0],
+          level: 1,
+        },
+      ]);
+      expect(report.diagnostics).toHaveLength(4);
+      expect(report.diagnostics[3]).toMatchObject({
+        code: "unreferenced_figure",
+        severity: "warning",
+        chapterId: chapter.id,
+        nodeId: "appendix",
+        path: [0],
+      });
+      expect(report.diagnostics.map((x) => x.message)).toEqual([
+        "Gambar 2.1 belum dirujuk dalam teks",
+        "Tabel 2.1 belum dirujuk dalam teks",
+        "Persamaan 1 belum dirujuk dalam teks",
+        "Lampiran A belum dirujuk dalam teks",
+      ]);
+      // Exclusions apply to findings, preserving context graphs for other plugins.
+      expect(ctx.images).toHaveLength(2);
+      expect(ctx.tables).toHaveLength(2);
+      expect(ctx.equations).toHaveLength(2);
+    },
+  );
+
+  test("recognizes head references and only requires level-one attachment headings", async () => {
+    const report = await runScan(
+      createScanContext({
+        chapters: [
+          {
+            id: "1",
+            content: [
+              { type: "heading", attrs: { id: "main-heading", level: 1 } },
+              {
+                type: "paragraph",
+                content: [
+                  {
+                    type: "refComponent",
+                    attrs: { ref: "head", link: "referenced" },
+                  },
+                  // A figure reference cannot satisfy a heading reference.
+                  {
+                    type: "refComponent",
+                    attrs: { ref: "imageFigure", link: "unreferenced" },
+                  },
+                  { type: "refComponent", attrs: { ref: "head", link: "" } },
+                ],
+              },
+            ],
+          },
+          {
+            id: "attachment",
+            content: [
+              { type: "heading", attrs: { id: "referenced", level: 1 } },
+              { type: "heading", attrs: { id: "subheading", level: 2 } },
+              {
+                type: "blockquote",
+                content: [
+                  {
+                    type: "heading",
+                    attrs: { id: "unreferenced", level: 1 },
+                  },
+                ],
+              },
+              { type: "heading", attrs: { level: 1 } },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(report.complete).toBe(true);
+    expect(report.results["unreferenced-figures"]?.headings).toMatchObject([
+      { id: "unreferenced", pos: 2, numbering: "2", path: [2, 0] },
+      { id: "", pos: 3, numbering: "3", path: [3] },
+    ]);
+    expect(report.diagnostics).toHaveLength(2);
+    expect(report.diagnostics.map((x) => x.message)).toEqual([
+      "Lampiran B belum dirujuk dalam teks",
+      "Lampiran C belum dirujuk dalam teks",
+    ]);
+  });
+
+  test("still collects references from attachment content", async () => {
+    const report = await runScan(
+      createScanContext({
+        chapters: [
+          {
+            id: "1",
+            content: [
+              figure("image"),
+              { type: "figureTable", attrs: { id: "table" } },
+              { type: "blockMath", attrs: { id: "equation" } },
+            ],
+          },
+          {
+            id: "attachment",
+            content: [
+              { type: "heading", attrs: { id: "appendix", level: 1 } },
+              {
+                type: "paragraph",
+                content: [
+                  {
+                    type: "refComponent",
+                    attrs: { ref: "imageFigure", link: "image" },
+                  },
+                  {
+                    type: "refComponent",
+                    attrs: { ref: "figureTable", link: "table" },
+                  },
+                  {
+                    type: "refComponent",
+                    attrs: { ref: "equation", link: "equation" },
+                  },
+                  {
+                    type: "refComponent",
+                    attrs: { ref: "head", link: "appendix" },
+                  },
+                  {
+                    type: "refComponent",
+                    attrs: { ref: "constructor", link: "ignored" },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(report.complete).toBe(true);
+    expect(report.results["unreferenced-figures"]).toEqual({
+      images: [],
+      tables: [],
+      equations: [],
+      headings: [],
+    });
+    expect(report.diagnostics).toEqual([]);
+  });
+
+  test("explicit attachment false overrides the default attachment chapter ID", async () => {
+    const report = await runScan(
+      createScanContext({
+        chapters: [
+          {
+            id: "attachment",
+            attachment: false,
+            content: [
+              { type: "heading", attrs: { id: "heading", level: 1 } },
+              figure("image"),
+              { type: "figureTable", attrs: { id: "table" } },
+              { type: "blockMath", attrs: { id: "equation" } },
+            ],
+          },
+        ],
+      }),
+    );
+    const result = report.results["unreferenced-figures"]!;
+    expect(result.images).toHaveLength(1);
+    expect(result.tables).toHaveLength(1);
+    expect(result.equations).toHaveLength(1);
+    expect(result.headings).toEqual([]);
+    expect(report.diagnostics).toHaveLength(3);
   });
 
   test("finds punctuation in nested paragraphs and skips code and inline code", async () => {
@@ -114,6 +335,96 @@ describe("standalone scanner", () => {
     expect(report.complete).toBe(true);
     expect(report.status).toBe("completed");
     expect(report.diagnostics.every((x) => x.paragraph === 1)).toBe(true);
+  });
+
+  test("punctuation identifies paragraph nodes and exact untrimmed UTF-16 ranges", async () => {
+    const raw = "  😀Ada  spasi ,ini!!  ";
+    const report = await runScan(
+      context([
+        {
+          type: "blockquote",
+          content: [{ ...paragraph(raw), attrs: { id: "paragraph-1" } }],
+        },
+      ]),
+    );
+    const issues = report.results.punctuation!;
+    expect(issues).toHaveLength(4);
+    expect(
+      issues.map((issue) => raw.slice(issue.range.from, issue.range.to)),
+    ).toEqual(["  ", " ,", ",", "!!"]);
+    for (const [index, issue] of issues.entries()) {
+      expect(issue).toMatchObject({
+        nodeId: "paragraph-1",
+        path: [0, 0],
+        paragraph: 1,
+      });
+      expect(issue.range.from).toBeGreaterThanOrEqual(7);
+      expect(report.diagnostics[index]).toMatchObject({
+        chapterId: "1",
+        nodeId: "paragraph-1",
+        path: [0, 0],
+        range: issue.range,
+      });
+    }
+  });
+
+  test("punctuation ranges account for hard breaks, masked inline atoms and code", async () => {
+    const report = await runScan(
+      context([
+        {
+          type: "paragraph",
+          attrs: { id: "paragraph-atoms" },
+          content: [
+            { type: "text", text: "  😀A" },
+            { type: "hardBreak" },
+            {
+              type: "refComponent",
+              attrs: { ref: "imageFigure", link: "missing" },
+              content: [{ type: "text", text: "<node:refComponent>" }],
+            },
+            { type: "variable" },
+            { type: "text", text: "B" },
+            { type: "text", text: "  C" },
+            { type: "text", text: "  ignored!!", marks: [{ type: "code" }] },
+          ],
+        },
+      ]),
+    );
+    expect(report.complete).toBe(true);
+    expect(report.results.punctuation).toHaveLength(1);
+    expect(report.diagnostics[0]).toMatchObject({
+      nodeId: "paragraph-atoms",
+      path: [0],
+      range: { from: 9, to: 11 },
+    });
+  });
+
+  test.each([
+    { nodeId: "" },
+    { nodeId: 42 },
+    { range: { from: -1, to: 1 } },
+    { range: { from: 2, to: 1 } },
+    { range: { from: 0.5, to: 1 } },
+    { range: { from: 0 } },
+  ])("rejects invalid diagnostic node/range metadata: %p", async (metadata) => {
+    const custom = definePlugin({
+      id: "invalid-location",
+      version: "1",
+      label: "Invalid location",
+      run: () => 1,
+      diagnostics: () => [
+        {
+          code: "test",
+          severity: "warning",
+          pluginId: "invalid-location",
+          message: "Test",
+          ...metadata,
+        } as unknown as ScanDiagnostic,
+      ],
+    });
+    const report = await runScan(context(), { plugins: [custom] });
+    expect(report.status).toBe("failed");
+    expect(report.errors[0].message).toBe("Invalid plugin diagnostic");
   });
 
   test("events retain progress/result/done order and custom results remain typed", async () => {

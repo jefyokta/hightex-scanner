@@ -38,12 +38,19 @@ export interface TableGraph extends FigureGraph {}
 export interface EquationGraph extends FigureGraph {
   latex: string;
 }
+export interface HeadingGraph extends FigureGraph {
+  level: number;
+}
 export interface ScanContext {
-  chapters: { id: string; title: string }[];
+  chapters: { id: string; title: string; attachment?: boolean }[];
   contents: Record<string, DocumentNode[]>;
   images: ImageGraph[];
   tables: TableGraph[];
   equations: EquationGraph[];
+}
+export interface ScanRange {
+  from: number;
+  to: number;
 }
 export interface ScanDiagnostic {
   code: string;
@@ -51,8 +58,12 @@ export interface ScanDiagnostic {
   pluginId: string;
   message: string;
   chapterId?: string;
+  /** Target node's attrs.id, when present. */
+  nodeId?: string;
   path?: number[];
   paragraph?: number;
+  /** UTF-16 offsets within the target node's content; `to` is exclusive. */
+  range?: ScanRange;
 }
 export interface Plugin<Id extends string = string, Result = unknown> {
   id: Id;

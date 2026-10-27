@@ -1,6 +1,6 @@
 {
   "name": "@hightex/scanner",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Runtime-independent HighTex document validation engine",
   "type": "module",
   "main": "./dist/index.js",

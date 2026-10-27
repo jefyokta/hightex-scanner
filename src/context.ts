@@ -30,7 +30,7 @@ export function walk(
   }
 }
 
-function alpha(value: number): string {
+export function alpha(value: number): string {
   let result = "";
   for (let n = Math.max(1, value); n > 0; n = Math.floor((n - 1) / 26))
     result = String.fromCharCode(65 + ((n - 1) % 26)) + result;
@@ -57,16 +57,17 @@ export function createScanContext(
     if (!chapter.id || ids.has(chapter.id))
       throw new Error("Chapter IDs must be nonempty and unique");
     ids.add(chapter.id);
+    const attachment = chapter.attachment ?? chapter.id === "attachment";
     ctx.chapters.push({
       id: chapter.id,
       title: chapter.title ?? `Chapter ${index + 1}`,
+      attachment,
     });
     const content = [...chapter.content];
     ctx.contents[chapter.id] = content;
     let image = 0,
       table = 0,
       heading = 0;
-    const attachment = chapter.attachment ?? chapter.id === "attachment";
     walk(
       content,
       (node, path) => {
